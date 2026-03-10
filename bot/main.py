@@ -29,6 +29,17 @@ async def on_shutdown(bot: Bot) -> None:
 
 
 async def main() -> None:
+    missing = []
+    if not settings.tavily_api_key:
+        missing.append("TAVILY_API_KEY")
+    if not settings.gemini_api_key:
+        missing.append("GEMINI_API_KEY")
+    if missing:
+        logger.warning(
+            "Missing keys in .env: %s — bot will start but analysis won't work. "
+            "Add them to your .env file.", ", ".join(missing),
+        )
+
     bot = Bot(
         token=settings.telegram_token,
         default=DefaultBotProperties(parse_mode=None),
