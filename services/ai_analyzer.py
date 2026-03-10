@@ -1,12 +1,10 @@
-"""Gemini 2.5 Flash integration for match analysis."""
+"""Anthropic Claude integration for match analysis."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
-from google import genai
-from google.genai import types
+import anthropic
 
 from config.settings import settings
 
@@ -90,31 +88,24 @@ FIND_MATCHES_TEMPLATE = """\
 
 
 class AIAnalyzer:
-    """Match analysis via Gemini 2.5 Flash."""
+    """Match analysis via Anthropic Claude API."""
 
     def __init__(self) -> None:
-        self._client = genai.Client(api_key=settings.gemini_api_key)
+        self._client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     async def _generate(self, prompt: str, system: str = SYSTEM_PROMPT) -> str:
-        """Send request to Gemini and return text response."""
+        """Send request to Claude and return text response."""
         try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self._client.models.generate_content(
-                    model=settings.gemini_model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system,
-                        max_output_tokens=settings.gemini_max_tokens,
-                        temperature=0.7,
-                    ),
-                ),
+            message = await self._client.messages.create(
+                model=settings.claude_model,
+                max_tokens=settings.claude_max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": prompt}],
             )
-            return response.text
+            return message.content[0].text
 
         except Exception as e:
-            logger.exception("Gemini API error")
+            logger.exception("Claude API error")
             return f"Ошибка AI-анализа: {e}"
 
     async def analyze_match(self, home: str, away: str, web_data: str) -> str:
@@ -122,7 +113,7 @@ class AIAnalyzer:
         prompt = ANALYSIS_TEMPLATE.format(
             home=home, away=away, web_data=web_data
         )
-        logger.info("Sending analysis request to Gemini for %s vs %s", home, away)
+        logger.info("Sending analysis request to Claude for %s vs %s", home, away)
         return await self._generate(prompt)
 
     async def pick_best_match(self, web_data: str) -> str:

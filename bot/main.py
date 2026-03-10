@@ -32,8 +32,8 @@ async def main() -> None:
     missing = []
     if not settings.tavily_api_key:
         missing.append("TAVILY_API_KEY")
-    if not settings.gemini_api_key:
-        missing.append("GEMINI_API_KEY")
+    if not settings.anthropic_api_key:
+        missing.append("ANTHROPIC_API_KEY")
     if missing:
         logger.warning(
             "Missing keys in .env: %s — bot will start but analysis won't work. "

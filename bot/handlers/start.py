@@ -42,7 +42,7 @@ HELP_TEXT = """\
 7. Лучшая ставка дня
 
 Данные: веб-поиск (Tavily)
-AI: Gemini 2.5 Flash"""
+AI: Claude (Anthropic)"""
 
 
 @router.message(Command("start"))
