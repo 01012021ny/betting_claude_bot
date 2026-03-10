@@ -2,39 +2,37 @@
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from models.schemas import Match
-
 
 def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Ближайший матч", callback_data="next_match")],
-            [InlineKeyboardButton(text="Статус API", callback_data="api_status")],
         ]
     )
 
 
-def match_list_kb(matches: list[tuple[int, Match]]) -> InlineKeyboardMarkup:
-    """Keyboard with list of matches (score, match)."""
+def match_list_kb(matches: list[tuple[str, str, str]]) -> InlineKeyboardMarkup:
+    """Keyboard with list of matches (home, away, info)."""
     buttons = []
-    for _score, match in matches[:5]:
-        label = f"{match.home.name} — {match.away.name} ({match.league_name})"
+    for home, away, info in matches[:5]:
+        label = f"{home} — {away} ({info[:30]})"
+        match_id = f"{home}_vs_{away}"
         buttons.append(
             [InlineKeyboardButton(
-                text=label,
-                callback_data=f"analyze_{match.fixture_id}",
+                text=label[:60],
+                callback_data=f"analyze_{match_id}"[:64],
             )]
         )
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def refresh_kb(fixture_id: int) -> InlineKeyboardMarkup:
+def refresh_kb(match_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="Обновить анализ",
-                    callback_data=f"refresh_{fixture_id}",
+                    callback_data=f"refresh_{match_id}"[:64],
                 ),
             ],
             [

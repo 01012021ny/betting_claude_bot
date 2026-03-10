@@ -6,11 +6,10 @@ import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 
 from bot.handlers import auto_pick, match, start
 from config.settings import settings
-from services.sports_api import sports_api
+from services.web_search import web_search
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +25,7 @@ async def on_startup(bot: Bot) -> None:
 
 async def on_shutdown(bot: Bot) -> None:
     logger.info("Shutting down...")
-    await sports_api.close()
+    await web_search.close()
 
 
 async def main() -> None:

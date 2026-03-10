@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import re
 
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
-from bot.keyboards.inline import match_list_kb, refresh_kb
-from models.schemas import MatchData
-from services.ai_analyzer import ai_analyzer  # noqa: F401 — used in analyze_and_send
-from services.match_selector import get_top_matches, select_best_match
-from services.sports_api import sports_api
+from bot.keyboards.inline import refresh_kb
+from services.ai_analyzer import ai_analyzer
+from services.web_search import web_search
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -27,7 +25,6 @@ async def _send_long_message(target, text: str, reply_markup=None) -> None:
         await target.answer(text, reply_markup=reply_markup)
         return
 
-    # Split by double newlines first, then by single newlines
     chunks: list[str] = []
     current = ""
     for paragraph in text.split("\n\n"):
@@ -46,151 +43,88 @@ async def _send_long_message(target, text: str, reply_markup=None) -> None:
         await target.answer(chunk, reply_markup=reply_markup if is_last else None)
 
 
-async def analyze_and_send(target, match) -> None:
-    """Full pipeline: collect data → AI analysis → send to user."""
-    # Notify user
+async def analyze_and_send(target, home: str, away: str) -> None:
+    """Full pipeline: web search → AI analysis → send to user."""
     wait_msg = await target.answer(
-        f"Анализирую матч: {match.home.name} — {match.away.name}\n"
-        f"({match.league_name}, {match.date.strftime('%H:%M UTC')})\n\n"
-        f"Собираю данные и генерирую AI-анализ..."
+        f"Анализирую матч: {home} — {away}\n\n"
+        f"Ищу данные в интернете и генерирую AI-анализ..."
     )
 
-    # Collect all match data in parallel
-    lineups_task = asyncio.create_task(sports_api.get_lineups(match.fixture_id))
-    h2h_task = asyncio.create_task(sports_api.get_h2h(match.home.id, match.away.id))
-    home_form_task = asyncio.create_task(sports_api.get_team_form(match.home.id))
-    away_form_task = asyncio.create_task(sports_api.get_team_form(match.away.id))
-    injuries_task = asyncio.create_task(sports_api.get_injuries(match.fixture_id))
+    # Search for match data
+    web_data = await web_search.search_match_data(home, away)
 
-    lineups, h2h, home_form, away_form, injuries = await asyncio.gather(
-        lineups_task, h2h_task, home_form_task, away_form_task, injuries_task
-    )
-
-    home_lineup = lineups[0] if len(lineups) > 0 else None
-    away_lineup = lineups[1] if len(lineups) > 1 else None
-
-    match_data = MatchData(
-        match=match,
-        home_form=home_form,
-        away_form=away_form,
-        h2h=h2h,
-        injuries=injuries,
-        home_lineup=home_lineup,
-        away_lineup=away_lineup,
-    )
+    if not web_data:
+        await target.answer(
+            "Не удалось найти данные по матчу. Попробуйте позже."
+        )
+        return
 
     # AI analysis
-    analysis = await ai_analyzer.analyze_match(match_data)
+    analysis = await ai_analyzer.analyze_match(home, away, web_data)
 
-    # Send result
-    header = (
-        f"⚽ {match.home.name} — {match.away.name}\n"
-        f"🏆 {match.league_name} | {match.league_round or ''}\n"
-        f"📅 {match.date.strftime('%d.%m.%Y %H:%M UTC')}\n"
-        f"🏟 {match.venue or 'N/A'}\n"
-        f"{'─' * 30}\n\n"
+    # Build a simple ID from team names for refresh
+    match_id = f"{home}_vs_{away}"
+
+    full_text = analysis
+    await _send_long_message(
+        target, full_text, reply_markup=refresh_kb(match_id)
     )
 
-    full_text = header + analysis
-    await _send_long_message(target, full_text, reply_markup=refresh_kb(match.fixture_id))
+
+def _parse_match_line(text: str) -> tuple[str, str] | None:
+    """Extract home and away team names from AI response."""
+    # Pattern: "МАТЧ: Team1 — Team2"
+    match = re.search(r"МАТЧ:\s*(.+?)\s*[—–-]\s*(.+)", text)
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
+    return None
 
 
 @router.message(Command("next"))
 async def cmd_next(message: Message) -> None:
     """Auto-pick the best upcoming match and analyze it."""
-    matches = await sports_api.get_upcoming_fixtures(minutes=30)
+    await message.answer("Ищу лучший матч на сегодня...")
 
-    if not matches:
-        # Try wider window
-        matches = await sports_api.get_upcoming_fixtures(minutes=120)
-        if not matches:
-            await message.answer(
-                "Нет значимых матчей в ближайшие 2 часа.\n"
-                "Используйте /match <название команды> для поиска конкретного матча."
-            )
-            return
+    # Search for today's matches
+    web_data = await web_search.search_upcoming_matches()
 
-        # Show list if no matches within 30 min
-        top = get_top_matches(matches, n=5)
+    if not web_data:
+        await message.answer("Не удалось найти матчи. Попробуйте позже.")
+        return
+
+    # Ask AI to pick the best match
+    pick_result = await ai_analyzer.pick_best_match(web_data)
+
+    parsed = _parse_match_line(pick_result)
+    if not parsed:
         await message.answer(
-            "В ближайшие 30 минут нет матчей.\n"
-            "Вот ближайшие значимые матчи (до 2 часов):",
-            reply_markup=match_list_kb(top),
+            f"Не удалось определить матч из ответа AI.\n"
+            f"Ответ: {pick_result[:200]}\n\n"
+            f"Попробуйте /match <название команды>"
         )
         return
 
-    best = select_best_match(matches)
-    if not best:
-        await message.answer("Не удалось выбрать матч. Попробуйте позже.")
-        return
-
-    await analyze_and_send(message, best)
+    home, away = parsed
+    await analyze_and_send(message, home, away)
 
 
 @router.callback_query(lambda c: c.data == "next_match")
 async def cb_next_match(callback: CallbackQuery) -> None:
     """Callback version of /next."""
     await callback.answer()
-    matches = await sports_api.get_upcoming_fixtures(minutes=60)
-
-    if not matches:
-        await callback.message.answer("Нет матчей в ближайший час.")
-        return
-
-    best = select_best_match(matches)
-    if best:
-        await analyze_and_send(callback.message, best)
-
-
-@router.callback_query(lambda c: c.data and c.data.startswith("analyze_"))
-async def cb_analyze_match(callback: CallbackQuery) -> None:
-    """Analyze a specific match from the list."""
-    await callback.answer()
-    fixture_id = int(callback.data.split("_")[1])
-
-    # Find match in cache
-    for minutes in (30, 60, 120):
-        matches = await sports_api.get_upcoming_fixtures(minutes=minutes)
-        for m in matches:
-            if m.fixture_id == fixture_id:
-                await analyze_and_send(callback.message, m)
-                return
-
-    await callback.message.answer("Матч не найден. Попробуйте /next.")
+    await cmd_next(callback.message)
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("refresh_"))
 async def cb_refresh(callback: CallbackQuery) -> None:
     """Refresh analysis for a match."""
     await callback.answer("Обновляю анализ...")
-    fixture_id = int(callback.data.split("_")[1])
+    match_id = callback.data[len("refresh_"):]
 
-    for minutes in (30, 60, 120, 360):
-        matches = await sports_api.get_upcoming_fixtures(minutes=minutes)
-        for m in matches:
-            if m.fixture_id == fixture_id:
-                await analyze_and_send(callback.message, m)
-                return
+    parts = match_id.split("_vs_")
+    if len(parts) != 2:
+        await callback.message.answer("Не удалось определить матч для обновления.")
+        return
 
-    await callback.message.answer("Матч не найден или уже завершился.")
-
-
-@router.callback_query(lambda c: c.data == "api_status")
-async def cb_api_status(callback: CallbackQuery) -> None:
-    """Show API usage status."""
-    await callback.answer()
-    from services.sports_api import get_api_usage
-
-    used, limit = get_api_usage()
-    remaining = limit - used
-    bar_len = 20
-    filled = int(bar_len * used / limit) if limit else 0
-    bar = "█" * filled + "░" * (bar_len - filled)
-
-    text = (
-        f"📊 Статус API-Football\n\n"
-        f"Использовано: {used}/{limit}\n"
-        f"Осталось: {remaining}\n"
-        f"[{bar}] {used * 100 // limit}%"
-    )
-    await callback.message.answer(text)
+    home, away = parts
+    await analyze_and_send(callback.message, home, away)
